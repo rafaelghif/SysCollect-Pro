@@ -61,8 +61,8 @@ Partial Class WinSpecForm
         'LblCopyright
         '
         Me.LblCopyright.Name = "LblCopyright"
-        Me.LblCopyright.Size = New System.Drawing.Size(187, 17)
-        Me.LblCopyright.Text = "© 2025 Muhammad Rafael Ghifari"
+        Me.LblCopyright.Size = New System.Drawing.Size(90, 17)
+        Me.LblCopyright.Text = "© 2025 Flontive"
         '
         'BgWorkerExport
         '

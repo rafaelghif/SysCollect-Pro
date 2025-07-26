@@ -1,9 +1,9 @@
 ﻿
 Microsoft Visual Studio Solution File, Format Version 12.00
 # Visual Studio Version 17
-VisualStudioVersion = 17.14.36310.24 d17.14
+VisualStudioVersion = 17.14.36310.24
 MinimumVisualStudioVersion = 10.0.40219.1
-Project("{F184B08F-C81C-45F6-A57F-5ABD9991F28F}") = "WindowsSpecification", "WindowsSpecification.vbproj", "{962CB51F-6AB7-4184-8667-7AFA66AFCCF4}"
+Project("{F184B08F-C81C-45F6-A57F-5ABD9991F28F}") = "SysCollect Pro", "SysCollect Pro.vbproj", "{962CB51F-6AB7-4184-8667-7AFA66AFCCF4}"
 EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution

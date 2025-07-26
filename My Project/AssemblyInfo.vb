@@ -1,4 +1,5 @@
-﻿Imports System
+﻿Imports System.Resources
+Imports System
 Imports System.Reflection
 Imports System.Runtime.InteropServices
 
@@ -8,12 +9,12 @@ Imports System.Runtime.InteropServices
 
 ' Review the values of the assembly attributes
 
-<Assembly: AssemblyTitle("WindowsSpecification")>
-<Assembly: AssemblyDescription("")>
-<Assembly: AssemblyCompany("")>
-<Assembly: AssemblyProduct("WindowsSpecification")>
-<Assembly: AssemblyCopyright("Copyright ©  2025")>
-<Assembly: AssemblyTrademark("")>
+<Assembly: AssemblyTitle("SysCollect Pro")>
+<Assembly: AssemblyDescription("Enterprise-grade system inventory and diagnostics collector for Windows environments. Designed to generate structured CSV exports of hardware, software, security, and licensing information across all supported Windows platforms.")>
+<Assembly: AssemblyCompany("Flontive")>
+<Assembly: AssemblyProduct("SysCollect Pro")>
+<Assembly: AssemblyCopyright("Copyright © Flontive 2025")>
+<Assembly: AssemblyTrademark("SysCollect Pro")>
 
 <Assembly: ComVisible(False)>
 
@@ -30,3 +31,4 @@ Imports System.Runtime.InteropServices
 
 <Assembly: AssemblyVersion("1.0.0.0")>
 <Assembly: AssemblyFileVersion("1.0.0.0")>
+<Assembly: NeutralResourcesLanguage("en")>
