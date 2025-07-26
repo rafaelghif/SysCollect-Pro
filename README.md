@@ -47,7 +47,7 @@ C:\System Information
 │ ├── Software
 │ │ └── DESKTOP-1234_000.csv
 │ └── License
-│ └── DESKTOP-1234_000.csv
+│	└── DESKTOP-1234_000.csv
 ```
 
 Each `.csv` is structured as:
