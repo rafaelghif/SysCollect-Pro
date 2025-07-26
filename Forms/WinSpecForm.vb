@@ -71,6 +71,11 @@ Public Class WinSpecForm
         End If
     End Sub
 
+    Private Sub WriteRow(sw As StreamWriter, category As String, key As String, value As String, Optional unit As String = "", Optional source As String = "System.Environment")
+        Dim collectedAt As String = Now.ToString("yyyy-MM-dd HH:mm:ss")
+        sw.WriteLine($"{category},{key},{value},{unit},{collectedAt},{source}")
+    End Sub
+
     Private Function ExportSystemInformation() As String
         Dim hostname = Environment.MachineName
         If Not Directory.Exists(BaseDir) Then Directory.CreateDirectory(BaseDir)
@@ -81,7 +86,7 @@ Public Class WinSpecForm
         ' --- Hardware Section ---
         Dim hardwarePath = PrepareOutputFile("Hardware", hostnameFolder)
         Using sw As New StreamWriter(hardwarePath)
-            sw.WriteLine("Property,Value")
+            sw.WriteLine("Category,Key,Value,Unit,CollectedAt,Source")
             WriteHostname(sw)
             WriteLoggedInUser(sw)
             WriteDomainInfo(sw)
@@ -112,7 +117,7 @@ Public Class WinSpecForm
         ' --- Software Section ---
         Dim softwarePath = PrepareOutputFile("Software", hostnameFolder)
         Using sw As New StreamWriter(softwarePath)
-            sw.WriteLine("Property,Value")
+            sw.WriteLine("Category,Key,Value,Unit,CollectedAt,Source")
             WriteOSInfo(sw)
             WriteInstalledApplications(sw)
             WriteAntivirusStatus(sw)
@@ -121,7 +126,7 @@ Public Class WinSpecForm
         ' --- License Section ---
         Dim licensePath = PrepareOutputFile("License", hostnameFolder)
         Using sw As New StreamWriter(licensePath)
-            sw.WriteLine("Property,Value")
+            sw.WriteLine("Category,Key,Value,Unit,CollectedAt,Source")
             WriteWindowsLicenseInfo(sw)
             WriteOfficeLicenseInfo(sw)
             WriteOfficeLicenseViaOSPP(sw)
@@ -188,49 +193,79 @@ Public Class WinSpecForm
     End Function
 
     Private Sub WriteHostname(sw As StreamWriter)
-        sw.WriteLine($"Hostname,{Environment.MachineName}")
+        Try
+            Dim hostname As String = Environment.MachineName
+            WriteRow(sw, "System Identity", "Hostname", hostname)
+        Catch ex As Exception
+            WriteRow(sw, "System Identity", "Hostname", $"Error: {ex.Message}", "", "System.Environment")
+        End Try
     End Sub
 
     Private Sub WriteOSInfo(sw As StreamWriter)
         Try
-            Dim osName = "Unknown"
-            Dim osBuild = ""
-            Dim osDisplayVersion = ""
+            Dim osName As String = "Unknown"
+            Dim osBuild As String = "Unknown"
+            Dim osDisplayVersion As String = "Unknown"
+            Dim editionId As String = "Unknown"
 
             Using mos As New ManagementObjectSearcher("SELECT Caption FROM Win32_OperatingSystem")
-                For Each mo In mos.Get()
-                    osName = If(mo("Caption"), "Unknown")
+                For Each mo As ManagementObject In mos.Get()
+                    osName = TryCast(mo("Caption"), String)
                 Next
             End Using
 
             Using regKey = Registry.LocalMachine.OpenSubKey("SOFTWARE\Microsoft\Windows NT\CurrentVersion")
                 If regKey IsNot Nothing Then
-                    Dim currentBuild = If(regKey.GetValue("CurrentBuild"), "")
-                    Dim ubr = regKey.GetValue("UBR")
-                    Dim displayVersion = If(regKey.GetValue("DisplayVersion"), "")
-                    osBuild = If(ubr IsNot Nothing, $"{currentBuild}.{ubr}", currentBuild)
-                    osDisplayVersion = displayVersion
+                    Dim currentBuild = TryCast(regKey.GetValue("CurrentBuild"), String)
+                    Dim ubrObj = regKey.GetValue("UBR")
+                    Dim displayVersion = TryCast(regKey.GetValue("DisplayVersion"), String)
+                    Dim edition = TryCast(regKey.GetValue("EditionID"), String)
+
+                    If currentBuild IsNot Nothing Then
+                        If ubrObj IsNot Nothing Then
+                            osBuild = $"{currentBuild}.{Convert.ToInt32(ubrObj)}"
+                        Else
+                            osBuild = currentBuild
+                        End If
+                    End If
+
+                    If Not String.IsNullOrWhiteSpace(displayVersion) Then
+                        osDisplayVersion = displayVersion
+                    End If
+
+                    If Not String.IsNullOrWhiteSpace(edition) Then
+                        editionId = edition
+                    End If
                 End If
             End Using
 
-            sw.WriteLine($"OS,{osName}")
-            sw.WriteLine($"OS Build,{osBuild}")
-            sw.WriteLine($"OS Display Version,{osDisplayVersion}")
+            WriteRow(sw, "OS", "Name", osName)
+            WriteRow(sw, "OS", "Edition", editionId)
+            WriteRow(sw, "OS", "Build", osBuild)
+            WriteRow(sw, "OS", "Display Version", osDisplayVersion)
+            WriteRow(sw, "OS", "Architecture", If(Environment.Is64BitOperatingSystem, "64-bit", "32-bit"))
+
         Catch ex As Exception
-            sw.WriteLine($"OS,Error: {ex.Message}")
+            WriteRow(sw, "OS", "Error", ex.Message)
         End Try
     End Sub
 
     Private Sub WriteCPUInfo(sw As StreamWriter)
         Try
             Using mos As New ManagementObjectSearcher("SELECT Name, MaxClockSpeed FROM Win32_Processor")
-                For Each mo In mos.Get()
-                    sw.WriteLine($"CPU,{mo("Name")}")
-                    sw.WriteLine($"CPU MaxClockSpeed MHz,{mo("MaxClockSpeed")}")
+                Dim idx As Integer = 1
+                For Each mo As ManagementObject In mos.Get()
+                    Dim name = mo("Name")?.ToString()
+                    Dim maxClock = mo("MaxClockSpeed")?.ToString()
+
+                    WriteRow(sw, "CPU", $"Processor {idx} Name", name, "", "WMI:Win32_Processor")
+                    WriteRow(sw, "CPU", $"Processor {idx} Max Clock Speed", maxClock, "MHz", "WMI:Win32_Processor")
+
+                    idx += 1
                 Next
             End Using
         Catch ex As Exception
-            sw.WriteLine($"CPU,Error: {ex.Message}")
+            WriteRow(sw, "CPU", "Error", ex.Message, "", "System")
         End Try
     End Sub
 
@@ -238,67 +273,77 @@ Public Class WinSpecForm
         Try
             Using mos As New ManagementObjectSearcher("SELECT BankLabel, Capacity, Speed, SMBIOSMemoryType FROM Win32_PhysicalMemory")
                 Dim idx = 1
-                For Each mo In mos.Get()
-                    Dim bankLabel = If(mo("BankLabel"), "Unknown")
-                    Dim capacityGB = If(mo("Capacity"), 0) / 1024 / 1024 / 1024
-                    Dim speedMHz = If(mo("Speed"), "Unknown")
-                    Dim typeCode = If(mo("SMBIOSMemoryType"), 0)
-                    Dim typeStr = GetMemoryTypeString(typeCode)
-                    sw.WriteLine($"RAM {idx} Slot,{bankLabel}")
-                    sw.WriteLine($"RAM {idx} Capacity (GB),{capacityGB:F2}")
-                    sw.WriteLine($"RAM {idx} Speed (MHz),{speedMHz}")
-                    sw.WriteLine($"RAM {idx} Type,{typeStr}")
+                For Each mo As ManagementObject In mos.Get()
+                    Dim bankLabel As String = If(mo("BankLabel"), "Unknown").ToString()
+                    Dim capacityBytes As ULong = Convert.ToUInt64(If(mo("Capacity"), 0))
+                    Dim capacityGB As Double = Math.Round(capacityBytes / 1024.0 / 1024 / 1024, 2)
+                    Dim speedMHz As String = If(mo("Speed"), "Unknown").ToString()
+                    Dim typeCode As Integer = Convert.ToInt32(If(mo("SMBIOSMemoryType"), 0))
+                    Dim typeStr As String = GetMemoryTypeString(typeCode)
+
+                    WriteRow(sw, "RAM", $"Slot {idx} Bank Label", bankLabel, "", "WMI:Win32_PhysicalMemory")
+                    WriteRow(sw, "RAM", $"Slot {idx} Capacity", capacityGB.ToString("F2"), "GB", "WMI:Win32_PhysicalMemory")
+                    WriteRow(sw, "RAM", $"Slot {idx} Speed", speedMHz, "MHz", "WMI:Win32_PhysicalMemory")
+                    WriteRow(sw, "RAM", $"Slot {idx} Type", typeStr, "", "WMI:Win32_PhysicalMemory")
+
                     idx += 1
                 Next
             End Using
         Catch ex As Exception
-            sw.WriteLine($"RAM,Error: {ex.Message}")
+            WriteRow(sw, "RAM", "Error", ex.Message, "", "System")
         End Try
     End Sub
 
     Private Sub WriteDiskInfo(sw As StreamWriter)
         Try
-            Dim driveInfoList As New List(Of Tuple(Of String, String))
+            Dim driveInfoList As New List(Of Tuple(Of String, String)) ' FriendlyName, MediaType
 
+            ' Step 1: Query physical disk media types from MSFT_PhysicalDisk
             Dim scope As New ManagementScope("\\.\ROOT\Microsoft\Windows\Storage")
             scope.Connect()
             Using mos As New ManagementObjectSearcher(scope, New ObjectQuery("SELECT MediaType, FriendlyName FROM MSFT_PhysicalDisk"))
-                For Each mo In mos.Get()
-                    Dim friendlyName = If(mo("FriendlyName"), "Unknown").ToString()
-                    Dim mediaTypeCode = If(mo("MediaType"), 0)
-                    Dim mediaTypeStr = If(mediaTypeCode = 3, "HDD", If(mediaTypeCode = 4, "SSD", If(mediaTypeCode = 5, "SCM", "Unknown")))
+                For Each mo As ManagementObject In mos.Get()
+                    Dim friendlyName As String = If(mo("FriendlyName"), "Unknown").ToString()
+                    Dim mediaTypeCode As Integer = Convert.ToInt32(If(mo("MediaType"), 0))
+                    Dim mediaTypeStr As String = If(mediaTypeCode = 3, "HDD", If(mediaTypeCode = 4, "SSD", If(mediaTypeCode = 5, "SCM", "Unknown")))
                     driveInfoList.Add(Tuple.Create(friendlyName, mediaTypeStr))
                 Next
             End Using
 
+            ' Step 2: Collect physical disk details from Win32_DiskDrive
             Using mosDisk As New ManagementObjectSearcher("SELECT Model, Size, SerialNumber FROM Win32_DiskDrive")
-                Dim idx = 1
-                For Each mo In mosDisk.Get()
-                    Dim model = If(mo("Model"), "Unknown")
-                    Dim serial = If(mo("SerialNumber"), "Unknown")
-                    Dim sizeBytes As ULong = If(mo("Size") IsNot Nothing, Convert.ToUInt64(mo("Size")), 0)
-                    Dim sizeGB = sizeBytes / 1024 / 1024 / 1024
-                    Dim typeStr = "Unknown"
-                    ' Step 4: Match Model with FriendlyName to get MediaType
+                Dim idx As Integer = 1
+                For Each mo As ManagementObject In mosDisk.Get()
+                    Dim model As String = If(mo("Model"), "Unknown").ToString()
+                    Dim serial As String = If(mo("SerialNumber"), "Unknown").ToString()
+                    Dim sizeBytes As ULong = Convert.ToUInt64(If(mo("Size"), 0))
+                    Dim sizeGB As Double = sizeBytes / 1024 / 1024 / 1024
+                    Dim typeStr As String = "Unknown"
+
+                    ' Step 3: Match model with friendly name to determine disk type
                     For Each info In driveInfoList
                         If model.Contains(info.Item1) OrElse info.Item1.Contains(model) Then
                             typeStr = info.Item2
                             Exit For
                         End If
                     Next
-                    sw.WriteLine($"Drive {idx} Model,{model}")
-                    sw.WriteLine($"Drive {idx} Serial Number,{serial}")
-                    sw.WriteLine($"Drive {idx} Size (GB),{sizeGB:F2}")
-                    sw.WriteLine($"Drive {idx} Type,{typeStr}")
+
+                    ' Step 4: Write formatted rows
+                    WriteRow(sw, "Disk", $"Drive {idx} Model", model, "", "WMI:Win32_DiskDrive")
+                    WriteRow(sw, "Disk", $"Drive {idx} Serial Number", serial, "", "WMI:Win32_DiskDrive")
+                    WriteRow(sw, "Disk", $"Drive {idx} Size", sizeGB.ToString("F2"), "GB", "WMI:Win32_DiskDrive")
+                    WriteRow(sw, "Disk", $"Drive {idx} Type", typeStr, "", "WMI:MSFT_PhysicalDisk")
                     idx += 1
                 Next
             End Using
 
+            ' Additional disk information
             WriteDiskPartitionStyleInfo(sw)
             WriteEFIPartitionStatus(sw)
             WriteBootDriveInfo(sw)
+
         Catch ex As Exception
-            WriteDiskInfoFallback(sw, ex)
+            WriteRow(sw, "Disk", "Error", ex.Message, "", "System")
         End Try
     End Sub
 
@@ -306,26 +351,51 @@ Public Class WinSpecForm
         Try
             Using searcher As New ManagementObjectSearcher("SELECT DeviceID FROM Win32_DiskDrive")
                 For Each drive As ManagementObject In searcher.Get()
-                    Dim deviceId = drive("DeviceID").ToString()
-
-                    ' Use MSFT_Disk to get partition style (GPT/MBR)
+                    Dim deviceId As String = drive("DeviceID").ToString()
                     Dim diskNumber As Integer = GetDiskNumberFromDeviceID(deviceId)
                     If diskNumber >= 0 Then
-                        Dim scope = New ManagementScope("\\.\ROOT\Microsoft\Windows\Storage")
+                        Dim scope As New ManagementScope("\\.\ROOT\Microsoft\Windows\Storage")
                         scope.Connect()
-                        Dim query = New ObjectQuery($"SELECT PartitionStyle FROM MSFT_Disk WHERE Number={diskNumber}")
+                        Dim query As New ObjectQuery($"SELECT PartitionStyle FROM MSFT_Disk WHERE Number={diskNumber}")
                         Using gptSearcher As New ManagementObjectSearcher(scope, query)
                             For Each disk As ManagementObject In gptSearcher.Get()
-                                Dim style = CInt(disk("PartitionStyle"))
-                                Dim styleName = If(style = 1, "MBR", If(style = 2, "GPT", "RAW/Unknown"))
-                                sw.WriteLine($"Disk {diskNumber} Partition Style," & styleName)
+                                Dim style As Integer = Convert.ToInt32(disk("PartitionStyle"))
+                                Dim styleName As String = If(style = 1, "MBR", If(style = 2, "GPT", "RAW/Unknown"))
+                                WriteRow(sw, "Disk", $"Disk {diskNumber} Partition Style", styleName, "", "WMI:MSFT_Disk")
                             Next
                         End Using
                     End If
                 Next
             End Using
         Catch ex As Exception
-            sw.WriteLine("Disk Partition Style,Error: " & ex.Message)
+            WriteRow(sw, "Disk", "Partition Style Error", ex.Message, "", "System")
+        End Try
+    End Sub
+
+    Private Sub WriteEFIPartitionStatus(sw As StreamWriter)
+        Try
+            Dim found As Boolean = False
+            Using searcher As New ManagementObjectSearcher("SELECT * FROM Win32_DiskPartition WHERE Type='EFI System Partition'")
+                For Each partition As ManagementObject In searcher.Get()
+                    WriteRow(sw, "Disk", "EFI System Partition", "Present", "", "WMI:Win32_DiskPartition")
+                    found = True
+                    Exit For
+                Next
+            End Using
+            If Not found Then
+                WriteRow(sw, "Disk", "EFI System Partition", "Not Found", "", "WMI:Win32_DiskPartition")
+            End If
+        Catch ex As Exception
+            WriteRow(sw, "Disk", "EFI System Partition Error", ex.Message, "", "System")
+        End Try
+    End Sub
+
+    Private Sub WriteBootDriveInfo(sw As StreamWriter)
+        Try
+            Dim systemDrive As String = Environment.GetEnvironmentVariable("SystemDrive")
+            WriteRow(sw, "Disk", "System Boot Drive", systemDrive, "", "System")
+        Catch ex As Exception
+            WriteRow(sw, "Disk", "System Boot Drive Error", ex.Message, "", "System")
         End Try
     End Sub
 
@@ -348,33 +418,6 @@ Public Class WinSpecForm
         End Try
         Return -1
     End Function
-
-    Private Sub WriteEFIPartitionStatus(sw As StreamWriter)
-        Try
-            Using searcher As New ManagementObjectSearcher("SELECT * FROM Win32_DiskPartition WHERE Type='EFI System Partition'")
-                Dim found As Boolean = False
-                For Each partition As ManagementObject In searcher.Get()
-                    sw.WriteLine("EFI System Partition,Present")
-                    found = True
-                    Exit For
-                Next
-                If Not found Then
-                    sw.WriteLine("EFI System Partition,Not Found")
-                End If
-            End Using
-        Catch ex As Exception
-            sw.WriteLine("EFI System Partition,Error: " & ex.Message)
-        End Try
-    End Sub
-
-    Private Sub WriteBootDriveInfo(sw As StreamWriter)
-        Try
-            Dim systemDrive = Environment.GetEnvironmentVariable("SystemDrive")
-            sw.WriteLine("System Boot Drive," & systemDrive)
-        Catch ex As Exception
-            sw.WriteLine("System Boot Drive,Error: " & ex.Message)
-        End Try
-    End Sub
 
     Private Sub WriteDiskInfoFallback(sw As StreamWriter, ex As Exception)
         Try
@@ -401,28 +444,45 @@ Public Class WinSpecForm
         Try
             Dim adapters = NetworkInterface.GetAllNetworkInterfaces()
             Dim idx = 1
+
             For Each adapter In adapters
-                If adapter.NetworkInterfaceType = NetworkInterfaceType.Ethernet OrElse adapter.NetworkInterfaceType = NetworkInterfaceType.Wireless80211 Then
+                If adapter.NetworkInterfaceType = NetworkInterfaceType.Ethernet OrElse
+               adapter.NetworkInterfaceType = NetworkInterfaceType.Wireless80211 Then
+
                     Dim macAddress = adapter.GetPhysicalAddress().ToString()
                     Dim properties = adapter.GetIPProperties()
-                    Dim ipv4 = "N/A"
+
+                    ' Get IPv4 and Domain
+                    Dim ipv4 As String = ""
+                    Dim dnsSuffix As String = If(properties.DnsSuffix, "")
+
+                    Dim ipList As New List(Of String)
                     For Each ip In properties.UnicastAddresses
                         If ip.Address.AddressFamily = Net.Sockets.AddressFamily.InterNetwork Then
-                            ipv4 = ip.Address.ToString()
-                            Exit For
+                            ipList.Add(ip.Address.ToString())
                         End If
                     Next
-                    sw.WriteLine($"NIC {idx} Name,{adapter.Name}")
-                    sw.WriteLine($"NIC {idx} Description,{adapter.Description}")
-                    sw.WriteLine($"NIC {idx} Type,{adapter.NetworkInterfaceType}")
-                    sw.WriteLine($"NIC {idx} MAC,{macAddress}")
-                    sw.WriteLine($"NIC {idx} IP,{ipv4}")
-                    sw.WriteLine($"NIC {idx} Status,{adapter.OperationalStatus}")
+                    ipv4 = If(ipList.Count > 0, String.Join(";", ipList), "N/A")
+
+                    ' Collect data
+                    WriteRow(sw, $"NIC {idx}", "Name", adapter.Name, "", "System.Net")
+                    WriteRow(sw, $"NIC {idx}", "Description", adapter.Description, "", "System.Net")
+                    WriteRow(sw, $"NIC {idx}", "Type", adapter.NetworkInterfaceType.ToString(), "", "System.Net")
+                    WriteRow(sw, $"NIC {idx}", "MAC", macAddress, "", "System.Net")
+                    WriteRow(sw, $"NIC {idx}", "IP (v4)", ipv4, "", "System.Net")
+                    WriteRow(sw, $"NIC {idx}", "Speed (Mbps)", (adapter.Speed \ 1000000).ToString(), "", "System.Net")
+                    WriteRow(sw, $"NIC {idx}", "DNS Suffix", dnsSuffix, "", "System.Net")
+                    WriteRow(sw, $"NIC {idx}", "Status", adapter.OperationalStatus.ToString(), "", "System.Net")
                     idx += 1
                 End If
             Next
+
+            If idx = 1 Then
+                WriteRow(sw, "Network", "Info", "No Ethernet/Wireless adapters found", "", "System.Net")
+            End If
+
         Catch ex As Exception
-            sw.WriteLine($"Network,Error: {ex.Message}")
+            WriteRow(sw, "Network", "Error", ex.Message, "", "System.Net")
         End Try
     End Sub
 
@@ -457,50 +517,68 @@ Public Class WinSpecForm
                     Dim partOfDomain = If(mo("PartOfDomain"), False)
                     Dim domainName = If(mo("Domain"), "Unknown")
                     Dim domainStatus = If(partOfDomain, "Domain Joined", "Not Domain Joined")
-                    sw.WriteLine($"Domain Status,{domainStatus}")
-                    sw.WriteLine($"Domain Name,{domainName}")
+
+                    WriteRow(sw, "System Identity", "Domain Status", domainStatus, "", "WMI:Win32_ComputerSystem")
+                    WriteRow(sw, "System Identity", "Domain Name", domainName, "", "WMI:Win32_ComputerSystem")
                 Next
             End Using
         Catch ex As Exception
-            sw.WriteLine($"Domain,Error: {ex.Message}")
+            WriteRow(sw, "System Identity", "Domain", $"Error: {ex.Message}", "", "WMI:Win32_ComputerSystem")
         End Try
     End Sub
 
     Private Sub WriteLoggedInUser(sw As StreamWriter)
         Try
-            sw.WriteLine($"Logged-In User,{Environment.UserDomainName}\{Environment.UserName}")
+            Dim loggedUser As String = $"{Environment.UserDomainName}\{Environment.UserName}"
+            WriteRow(sw, "System Identity", "Logged-In User", loggedUser, "", "System.Environment")
         Catch ex As Exception
-            sw.WriteLine($"Logged-In User,Error: {ex.Message}")
+            WriteRow(sw, "System Identity", "Logged-In User", $"Error: {ex.Message}", "", "System.Environment")
         End Try
     End Sub
 
     Private Sub WriteInstalledApplications(sw As StreamWriter)
         Try
             Dim regViews = {RegistryView.Registry64, RegistryView.Registry32}
-            Dim idx = 1
-            For Each view In regViews
-                Using baseKey = RegistryKey.OpenBaseKey(RegistryHive.LocalMachine, view)
-                    Using uninstallKey = baseKey.OpenSubKey("SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall")
-                        If uninstallKey IsNot Nothing Then
-                            For Each subKeyName In uninstallKey.GetSubKeyNames()
-                                Using subKey = uninstallKey.OpenSubKey(subKeyName)
-                                    If subKey IsNot Nothing Then
-                                        Dim displayName = If(subKey.GetValue("DisplayName"), "")
-                                        Dim version = If(subKey.GetValue("DisplayVersion"), "")
-                                        If Not String.IsNullOrWhiteSpace(displayName) Then
-                                            sw.WriteLine($"App {idx} Name,{displayName}")
-                                            sw.WriteLine($"App {idx} Version,{version}")
-                                            idx += 1
+            Dim hives = {
+            New With {.Hive = RegistryHive.LocalMachine, .Source = "Registry (HKLM)"},
+            New With {.Hive = RegistryHive.CurrentUser, .Source = "Registry (HKCU)"}
+        }
+
+            For Each hive In hives
+                For Each view In regViews
+                    Using baseKey = RegistryKey.OpenBaseKey(hive.Hive, view)
+                        Using uninstallKey = baseKey.OpenSubKey("SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall")
+                            If uninstallKey IsNot Nothing Then
+                                For Each subKeyName In uninstallKey.GetSubKeyNames()
+                                    Using subKey = uninstallKey.OpenSubKey(subKeyName)
+                                        If subKey IsNot Nothing Then
+                                            Dim displayName = TryCast(subKey.GetValue("DisplayName"), String)
+                                            Dim version = TryCast(subKey.GetValue("DisplayVersion"), String)
+                                            Dim publisher = TryCast(subKey.GetValue("Publisher"), String)
+                                            Dim installLocation = TryCast(subKey.GetValue("InstallLocation"), String)
+
+                                            If Not String.IsNullOrWhiteSpace(displayName) Then
+                                                WriteRow(sw, "Application", "Name", displayName, source:=hive.Source)
+                                                WriteRow(sw, "Application", "Version", version, source:=hive.Source)
+                                                If Not String.IsNullOrWhiteSpace(publisher) Then
+                                                    WriteRow(sw, "Application", "Publisher", publisher, source:=hive.Source)
+                                                End If
+                                                If Not String.IsNullOrWhiteSpace(installLocation) Then
+                                                    WriteRow(sw, "Application", "Install Location", installLocation, source:=hive.Source)
+                                                End If
+                                                WriteRow(sw, "Application", "----------------", "----------------", source:=hive.Source)
+                                            End If
                                         End If
-                                    End If
-                                End Using
-                            Next
-                        End If
+                                    End Using
+                                Next
+                            End If
+                        End Using
                     End Using
-                End Using
+                Next
             Next
+
         Catch ex As Exception
-            sw.WriteLine($"Installed Applications,Error: {ex.Message}")
+            WriteRow(sw, "Application", "Error", ex.Message)
         End Try
     End Sub
 
@@ -508,128 +586,164 @@ Public Class WinSpecForm
         Try
             Using searcher As New ManagementObjectSearcher("root\CIMV2\Security\MicrosoftTpm", "SELECT * FROM Win32_Tpm")
                 Dim found = False
+
                 For Each mo As ManagementObject In searcher.Get()
                     found = True
-                    Dim isPresent = If(mo("IsEnabled_InitialValue") IsNot Nothing, mo("IsEnabled_InitialValue").ToString(), "Unknown")
-                    Dim version = If(mo("SpecVersion") IsNot Nothing, mo("SpecVersion").ToString(), "Unknown")
-                    sw.WriteLine($"TPM Present,Yes")
-                    sw.WriteLine($"TPM Version,{version}")
-                    sw.WriteLine($"TPM Enabled,{isPresent}")
+
+                    ' IsEnabled_InitialValue
+                    Dim isEnabledStr As String = "Unknown"
+                    If mo("IsEnabled_InitialValue") IsNot Nothing Then
+                        Dim isEnabled As Boolean = Convert.ToBoolean(mo("IsEnabled_InitialValue"))
+                        isEnabledStr = If(isEnabled, "Yes", "No")
+                    End If
+
+                    ' SpecVersion
+                    Dim version As String = If(mo("SpecVersion") IsNot Nothing, mo("SpecVersion").ToString(), "Unknown")
+
+                    WriteRow(sw, "TPM", "Present", "Yes", "", "WMI:Win32_Tpm")
+                    WriteRow(sw, "TPM", "Version", version, "", "WMI:Win32_Tpm")
+                    WriteRow(sw, "TPM", "Enabled (InitialValue)", isEnabledStr, "", "WMI:Win32_Tpm")
                 Next
+
                 If Not found Then
-                    sw.WriteLine("TPM Present,No")
+                    WriteRow(sw, "TPM", "Present", "No", "", "WMI:Win32_Tpm")
                 End If
             End Using
         Catch ex As Exception
-            sw.WriteLine($"TPM,Error: {ex.Message}")
+            WriteRow(sw, "TPM", "Error", ex.Message, "", "WMI:Win32_Tpm")
         End Try
     End Sub
 
     Private Sub WriteGPUInfo(sw As StreamWriter)
         Try
             Using mos As New ManagementObjectSearcher("SELECT Name, AdapterRAM, DriverVersion FROM Win32_VideoController")
-                Dim idx = 1
-                For Each mo In mos.Get()
-                    Dim name = If(mo("Name"), "Unknown")
-                    Dim vramBytes As ULong = If(mo("AdapterRAM"), 0UL)
-                    Dim vramGB = vramBytes / 1024 / 1024 / 1024
-                    Dim driverVer = If(mo("DriverVersion"), "Unknown")
-                    sw.WriteLine($"GPU {idx} Name,{name}")
-                    sw.WriteLine($"GPU {idx} VRAM (GB),{vramGB:F2}")
-                    sw.WriteLine($"GPU {idx} Driver Version,{driverVer}")
+                Dim idx As Integer = 1
+                For Each mo As ManagementObject In mos.Get()
+                    Dim name As String = If(mo("Name"), "Unknown").ToString()
+                    Dim vramBytes As ULong = Convert.ToUInt64(If(mo("AdapterRAM"), 0UL))
+                    Dim vramGB As Double = vramBytes / 1024 / 1024 / 1024
+                    Dim driverVer As String = If(mo("DriverVersion"), "Unknown").ToString()
+
+                    WriteRow(sw, "GPU", $"GPU {idx} Name", name, "", "WMI:Win32_VideoController")
+                    WriteRow(sw, "GPU", $"GPU {idx} VRAM", vramGB.ToString("F2"), "GB", "WMI:Win32_VideoController")
+                    WriteRow(sw, "GPU", $"GPU {idx} Driver Version", driverVer, "", "WMI:Win32_VideoController")
                     idx += 1
                 Next
             End Using
         Catch ex As Exception
-            sw.WriteLine($"GPU,Error: {ex.Message}")
+            WriteRow(sw, "GPU", "Error", ex.Message, "", "System")
         End Try
     End Sub
 
     Private Sub WriteBitLockerInfo(sw As StreamWriter)
         Try
-            Dim scope As New ManagementScope("\\.\ROOT\CIMV2\Security\MicrosoftVolumeEncryption")
+            Dim scope As New ManagementScope("\\.\root\CIMV2\Security\MicrosoftVolumeEncryption")
             scope.Connect()
-            Using searcher As New ManagementObjectSearcher(scope, New ObjectQuery("SELECT DriveLetter, ProtectionStatus FROM Win32_EncryptableVolume"))
-                Dim idx = 1
-                For Each mo As ManagementObject In searcher.Get()
-                    Dim driveLetter = If(mo("DriveLetter"), "Unknown")
-                    Dim protectionStatus = If(mo("ProtectionStatus"), 2)
-                    Dim statusStr = If(protectionStatus = 0, "Off", If(protectionStatus = 1, "On", "Unknown"))
-                    sw.WriteLine($"BitLocker {idx} Drive,{driveLetter}")
-                    sw.WriteLine($"BitLocker {idx} Status,{statusStr}")
+
+            Dim query As New ObjectQuery("SELECT * FROM Win32_EncryptableVolume")
+            Using searcher As New ManagementObjectSearcher(scope, query)
+                Dim idx As Integer = 1
+
+                For Each volume As ManagementObject In searcher.Get()
+                    Dim driveLetter As String = TryCast(volume("DriveLetter"), String)
+                    driveLetter = If(String.IsNullOrWhiteSpace(driveLetter), "N/A", driveLetter)
+
+                    ' Call GetProtectionStatus method properly
+                    Dim outParams As ManagementBaseObject = volume.InvokeMethod("GetProtectionStatus", Nothing, Nothing)
+                    Dim protectionStatusCode As UInteger = CUInt(outParams("ProtectionStatus"))
+                    Dim protectionStatusText As String = GetBitLockerProtectionStatusText(protectionStatusCode)
+
+                    WriteRow(sw, $"BitLocker Volume {idx}", "Drive Letter", driveLetter, "", "BitLocker")
+                    WriteRow(sw, $"BitLocker Volume {idx}", "Protection Status", protectionStatusText, "", "BitLocker")
+
                     idx += 1
                 Next
             End Using
+
         Catch ex As Exception
-            sw.WriteLine($"BitLocker,Error: {ex.Message}")
+            WriteRow(sw, "BitLocker", "Error", ex.Message, "", "BitLocker")
         End Try
     End Sub
+
+    Private Function GetBitLockerProtectionStatusText(status As UInteger) As String
+        Select Case status
+            Case 0 : Return "Protection Off"
+            Case 1 : Return "Protection On"
+            Case 2 : Return "Protection Unknown"
+            Case Else : Return "Unknown Code (" & status.ToString() & ")"
+        End Select
+    End Function
 
     Private Sub WriteAntivirusStatus(sw As StreamWriter)
         Try
             Using mos As New ManagementObjectSearcher("root\SecurityCenter2", "SELECT displayName, productState FROM AntiVirusProduct")
                 Dim idx As Integer = 1
                 For Each mo As ManagementObject In mos.Get()
-                    Dim name As String = If(mo("displayName"), "Unknown")
+                    Dim name As String = If(TryCast(mo("displayName"), String), "Unknown")
                     Dim productState As Integer = Convert.ToInt32(mo("productState"))
-                    Dim hexState As String = $"0x{productState:X}"
+                    Dim hexState As String = $"0x{productState:X6}"
 
-                    ' Breakdown productState
+                    ' Breakdown bits
                     Dim statusByte As Integer = productState And &HFF
                     Dim reportingByte As Integer = (productState >> 8) And &HFF
                     Dim definitionByte As Integer = (productState >> 16) And &HFF
 
-                    ' Interpret status
-                    Dim statusStr As String
-                    If statusByte = 0 Then
-                        statusStr = "Not Reporting or Passive Mode"
-                    ElseIf (statusByte And &H10) = &H10 Then
-                        statusStr = If((definitionByte And &H10) = &H10, "Enabled and Up-to-date", "Enabled but Outdated")
-                    Else
-                        statusStr = "Unknown Status"
-                    End If
+                    ' Interpret state
+                    Dim statusStr As String = ""
+                    Select Case statusByte
+                        Case &H10
+                            statusStr = If((definitionByte And &H10) = &H10, "Enabled and Up-to-date", "Enabled but Outdated")
+                        Case &H0
+                            statusStr = "Not Reporting or Passive Mode"
+                        Case Else
+                            statusStr = "Unknown or Inactive"
+                    End Select
 
-                    ' Write to CSV
-                    sw.WriteLine($"Antivirus {idx} Name,{name}")
-                    sw.WriteLine($"Antivirus {idx} Status,{statusStr}")
-                    sw.WriteLine($"Antivirus {idx} ProductState (Hex),{hexState}")
-                    sw.WriteLine($"Antivirus {idx} Status Byte,{statusByte}")
-                    sw.WriteLine($"Antivirus {idx} Reporting Byte,{reportingByte}")
-                    sw.WriteLine($"Antivirus {idx} Definitions Byte,{definitionByte}")
+                    ' Write rows using structured format
+                    WriteRow(sw, $"Antivirus {idx}", "Name", name, source:="WMI:AntiVirusProduct")
+                    WriteRow(sw, $"Antivirus {idx}", "Status", statusStr, source:="WMI:AntiVirusProduct")
+                    WriteRow(sw, $"Antivirus {idx}", "ProductState (Hex)", hexState, source:="WMI:AntiVirusProduct")
+                    WriteRow(sw, $"Antivirus {idx}", "Status Byte", statusByte.ToString(), source:="WMI:AntiVirusProduct")
+                    WriteRow(sw, $"Antivirus {idx}", "Reporting Byte", reportingByte.ToString(), source:="WMI:AntiVirusProduct")
+                    WriteRow(sw, $"Antivirus {idx}", "Definition Byte", definitionByte.ToString(), source:="WMI:AntiVirusProduct")
+
                     idx += 1
                 Next
             End Using
         Catch ex As Exception
-            sw.WriteLine($"Antivirus,Error: {ex.Message}")
+            WriteRow(sw, "Antivirus", "Error", ex.Message, source:="WMI:AntiVirusProduct")
         End Try
     End Sub
 
     Private Sub WriteBIOSInfo(sw As StreamWriter)
         Try
-            sw.WriteLine("BIOS Information,")
-            Dim searcher As New ManagementObjectSearcher("SELECT * FROM Win32_BIOS")
-            For Each obj As ManagementObject In searcher.Get()
-                sw.WriteLine("BIOS Vendor," & obj("Manufacturer"))
-                sw.WriteLine("BIOS Version," & obj("SMBIOSBIOSVersion"))
-                sw.WriteLine("BIOS Serial Number," & obj("SerialNumber"))
-                sw.WriteLine("BIOS Release Date," & ManagementDateToDate(obj("ReleaseDate")))
-            Next
+            Using searcher As New ManagementObjectSearcher("SELECT * FROM Win32_BIOS")
+                For Each obj As ManagementObject In searcher.Get()
+                    WriteRow(sw, "BIOS", "Vendor", obj("Manufacturer")?.ToString(), "", "WMI:Win32_BIOS")
+                    WriteRow(sw, "BIOS", "Version", obj("SMBIOSBIOSVersion")?.ToString(), "", "WMI:Win32_BIOS")
+                    WriteRow(sw, "BIOS", "Serial Number", obj("SerialNumber")?.ToString(), "", "WMI:Win32_BIOS")
+
+                    Dim releaseDateRaw = obj("ReleaseDate")?.ToString()
+                    Dim releaseDateFormatted = If(String.IsNullOrWhiteSpace(releaseDateRaw), "Unknown", ManagementDateToDate(releaseDateRaw))
+                    WriteRow(sw, "BIOS", "Release Date", releaseDateFormatted, "", "WMI:Win32_BIOS")
+                Next
+            End Using
         Catch ex As Exception
-            sw.WriteLine("BIOS Info Error," & ex.Message)
+            WriteRow(sw, "BIOS", "Error", ex.Message, "", "System")
         End Try
     End Sub
 
     Private Sub WriteMotherboardInfo(sw As StreamWriter)
         Try
-            sw.WriteLine("Motherboard Information,")
-            Dim searcher As New ManagementObjectSearcher("SELECT * FROM Win32_BaseBoard")
-            For Each obj As ManagementObject In searcher.Get()
-                sw.WriteLine("Motherboard Manufacturer," & obj("Manufacturer"))
-                sw.WriteLine("Motherboard Product," & obj("Product"))
-                sw.WriteLine("Motherboard Serial Number," & obj("SerialNumber"))
-            Next
+            Using searcher As New ManagementObjectSearcher("SELECT * FROM Win32_BaseBoard")
+                For Each obj As ManagementObject In searcher.Get()
+                    WriteRow(sw, "Motherboard", "Manufacturer", obj("Manufacturer")?.ToString(), "", "WMI:Win32_BaseBoard")
+                    WriteRow(sw, "Motherboard", "Product", obj("Product")?.ToString(), "", "WMI:Win32_BaseBoard")
+                    WriteRow(sw, "Motherboard", "Serial Number", obj("SerialNumber")?.ToString(), "", "WMI:Win32_BaseBoard")
+                Next
+            End Using
         Catch ex As Exception
-            sw.WriteLine("Motherboard Info Error," & ex.Message)
+            WriteRow(sw, "Motherboard", "Error", ex.Message, "", "System")
         End Try
     End Sub
 
@@ -650,120 +764,148 @@ Public Class WinSpecForm
 
     Private Sub WriteWindowsLicenseInfo(sw As StreamWriter)
         Try
-            sw.WriteLine("Windows License Info,")
-
             Dim searcher As New ManagementObjectSearcher(
-            "SELECT * FROM SoftwareLicensingProduct WHERE PartialProductKey IS NOT NULL AND LicenseStatus IS NOT NULL")
+            "SELECT Name, PartialProductKey, LicenseStatus FROM SoftwareLicensingProduct " &
+            "WHERE PartialProductKey IS NOT NULL AND LicenseStatus IS NOT NULL")
 
+            Dim found As Boolean = False
             For Each obj As ManagementObject In searcher.Get()
-                Dim name = TryCast(obj("Name"), String)
-                Dim key = TryCast(obj("PartialProductKey"), String)
-                Dim statusCode = Convert.ToInt32(obj("LicenseStatus"))
-                Dim statusDesc = GetLicenseStatusString(statusCode)
+                Dim name As String = TryCast(obj("Name"), String)
+                Dim key As String = TryCast(obj("PartialProductKey"), String)
+                Dim statusCode As Integer = Convert.ToInt32(obj("LicenseStatus"))
+                Dim statusDesc As String = GetLicenseStatusString(statusCode)
 
-                If Not String.IsNullOrEmpty(name) Then sw.WriteLine("Product Name," & name)
-                If Not String.IsNullOrEmpty(key) Then sw.WriteLine("Partial Product Key," & key)
-                sw.WriteLine("License Status," & statusDesc)
-                Exit For ' Typically only one relevant item
+                If Not String.IsNullOrEmpty(name) Then WriteRow(sw, "Windows License", "Product Name", name, source:="WMI:SoftwareLicensingProduct")
+                If Not String.IsNullOrEmpty(key) Then WriteRow(sw, "Windows License", "Partial Product Key", key, source:="WMI:SoftwareLicensingProduct")
+                WriteRow(sw, "Windows License", "License Status", statusDesc, source:="WMI:SoftwareLicensingProduct")
+
+                found = True
+                Exit For ' Only the first relevant record is usually sufficient
             Next
+
+            If Not found Then
+                WriteRow(sw, "Windows License", "Status", "No license information found", source:="WMI:SoftwareLicensingProduct")
+            End If
         Catch ex As Exception
-            sw.WriteLine("Windows License Info,Error retrieving license info: " & ex.Message)
+            WriteRow(sw, "Windows License", "Error", ex.Message, source:="WMI:SoftwareLicensingProduct")
         End Try
     End Sub
 
     Private Sub WriteOfficeLicenseInfo(sw As StreamWriter)
-        sw.WriteLine("Microsoft Office License Info,")
-
-        Dim officeVersions As New Dictionary(Of String, String()) From {
+        Try
+            Dim officeVersions As New Dictionary(Of String, String()) From {
             {"Office 2016 / 2019 / 365", {"SOFTWARE\Microsoft\Office\16.0\Registration"}},
             {"Office 2013", {"SOFTWARE\Microsoft\Office\15.0\Registration"}},
             {"Office 2010", {"SOFTWARE\Microsoft\Office\14.0\Registration"}}
         }
 
-        Dim foundAny As Boolean = False
+            Dim foundAny As Boolean = False
 
-        For Each kvp In officeVersions
-            Dim officeVersionName = kvp.Key
-            For Each regPath In kvp.Value
-                Try
-                    Using regKey As RegistryKey = Registry.LocalMachine.OpenSubKey(regPath)
-                        If regKey IsNot Nothing Then
-                            For Each subKeyName In regKey.GetSubKeyNames()
-                                Using subKey As RegistryKey = regKey.OpenSubKey(subKeyName)
-                                    If subKey IsNot Nothing Then
-                                        Dim productName = TryCast(subKey.GetValue("ProductName"), String)
-                                        Dim productId = TryCast(subKey.GetValue("ProductId"), String)
-                                        Dim digitalProductId = TryCast(subKey.GetValue("DigitalProductId"), Byte())
+            For Each kvp In officeVersions
+                Dim officeVersionName = kvp.Key
+                For Each regPath In kvp.Value
+                    Try
+                        Using regKey As RegistryKey = Registry.LocalMachine.OpenSubKey(regPath)
+                            If regKey IsNot Nothing Then
+                                For Each subKeyName In regKey.GetSubKeyNames()
+                                    Using subKey As RegistryKey = regKey.OpenSubKey(subKeyName)
+                                        If subKey IsNot Nothing Then
+                                            Dim productName = TryCast(subKey.GetValue("ProductName"), String)
+                                            Dim productId = TryCast(subKey.GetValue("ProductId"), String)
+                                            Dim digitalProductId = TryCast(subKey.GetValue("DigitalProductId"), Byte())
 
-                                        If Not String.IsNullOrEmpty(productName) Then
-                                            sw.WriteLine("Version," & officeVersionName)
-                                            sw.WriteLine("Product Name," & productName)
-                                            sw.WriteLine("Product ID," & If(String.IsNullOrEmpty(productId), "N/A", productId))
-                                            sw.WriteLine("Partial Key (Base64?),<Hidden or Not Readable>")
-                                            sw.WriteLine("") ' Spacer
-                                            foundAny = True
+                                            If Not String.IsNullOrEmpty(productName) Then
+                                                WriteRow(sw, "Office License", "Office Version", officeVersionName, source:=$"Registry:{regPath}")
+                                                WriteRow(sw, "Office License", "Product Name", productName, source:=$"Registry:{regPath}")
+                                                WriteRow(sw, "Office License", "Product ID", If(String.IsNullOrEmpty(productId), "N/A", productId), source:=$"Registry:{regPath}")
+                                                WriteRow(sw, "Office License", "Partial Key", "<Hidden or Not Readable>", source:=$"Registry:{regPath}")
+                                                foundAny = True
+                                            End If
                                         End If
-                                    End If
-                                End Using
-                            Next
-                        End If
-                    End Using
-                Catch ex As Exception
-                    sw.WriteLine("Error reading registry (" & officeVersionName & "): " & ex.Message)
-                End Try
+                                    End Using
+                                Next
+                            End If
+                        End Using
+                    Catch ex As Exception
+                        WriteRow(sw, "Office License", $"Error Reading {officeVersionName}", ex.Message, source:=$"Registry:{regPath}")
+                    End Try
+                Next
             Next
-        Next
 
-        If Not foundAny Then
-            sw.WriteLine("No Office license information found.")
-        End If
+            If Not foundAny Then
+                WriteRow(sw, "Office License", "Status", "No Office license information found", source:="Registry")
+            End If
+        Catch ex As Exception
+            WriteRow(sw, "Office License", "Fatal Error", ex.Message, source:="System")
+        End Try
     End Sub
 
     Private Sub WriteOfficeLicenseViaOSPP(sw As StreamWriter)
-        sw.WriteLine("Microsoft Office Activation Status (via ospp.vbs),")
+        Try
+            Dim officePaths As String() = {
+            "C:\Program Files\Microsoft Office",
+            "C:\Program Files (x86)\Microsoft Office"
+        }
 
-        Dim officePaths As String() = {
-        "C:\Program Files\Microsoft Office",
-        "C:\Program Files (x86)\Microsoft Office"
-    }
+            Dim foundScript As Boolean = False
 
-        Dim found As Boolean = False
+            For Each basePath In officePaths
+                If Directory.Exists(basePath) Then
+                    Dim officeDirs = Directory.GetDirectories(basePath, "Office*")
 
-        For Each basePath In officePaths
-            If Directory.Exists(basePath) Then
-                Dim officeDirs = Directory.GetDirectories(basePath, "Office*")
+                    For Each dir As String In officeDirs
+                        Dim scriptPath = Path.Combine(dir, "ospp.vbs")
+                        If File.Exists(scriptPath) Then
+                            foundScript = True
 
-                For Each dir As String In officeDirs
-                    Dim scriptPath = Path.Combine(dir, "ospp.vbs")
-                    If File.Exists(scriptPath) Then
-                        found = True
-
-                        Dim psi As New ProcessStartInfo("cscript.exe") With {
-                            .Arguments = "//Nologo """ & scriptPath & """ /dstatus",
+                            Dim psi As New ProcessStartInfo("cscript.exe") With {
+                            .Arguments = $"//Nologo ""{scriptPath}"" /dstatus",
                             .CreateNoWindow = True,
                             .UseShellExecute = False,
                             .RedirectStandardOutput = True
                         }
 
-                        Using proc As Process = Process.Start(psi)
-                            Dim output As String = proc.StandardOutput.ReadToEnd()
-                            proc.WaitForExit()
+                            Using proc As Process = Process.Start(psi)
+                                Dim output As String = proc.StandardOutput.ReadToEnd()
+                                proc.WaitForExit()
 
-                            sw.WriteLine(output.Replace(vbCrLf, Environment.NewLine))
-                            sw.WriteLine("")
-                        End Using
+                                ' Parse each line
+                                Dim lines = output.Split({vbCrLf, vbLf}, StringSplitOptions.RemoveEmptyEntries)
+                                Dim idx = 1
+                                Dim category = $"Office License via OSPP ({Path.GetFileName(dir)})"
 
-                        Exit For
-                    End If
-                Next
+                                For Each line In lines
+                                    If line.Contains(":") Then
+                                        Dim parts = line.Split(New Char() {":"c}, 2)
+                                        Dim key = parts(0).Trim()
+                                        Dim value = parts(1).Trim()
+                                        If Not String.IsNullOrWhiteSpace(key) Then
+                                            WriteRow(sw, category, key, value, source:="ospp.vbs")
+                                        End If
+                                    Else
+                                        ' For lines like "---Processing---" or status blocks
+                                        WriteRow(sw, category, $"Info {idx}", line.Trim(), source:="ospp.vbs")
+                                        idx += 1
+                                    End If
+                                Next
+
+                                WriteRow(sw, category, "Execution Status", "Completed", source:="ospp.vbs")
+                            End Using
+
+                            Exit For ' Stop after first valid OSPP.vbs found
+                        End If
+                    Next
+                End If
+
+                If foundScript Then Exit For
+            Next
+
+            If Not foundScript Then
+                WriteRow(sw, "Office License via OSPP", "Status", "ospp.vbs not found (Office may be Click-to-Run or not installed)", source:="ospp.vbs")
             End If
-
-            If found Then Exit For
-        Next
-
-        If Not found Then
-            sw.WriteLine("ospp.vbs not found on this machine (Office may be Click-to-Run or not installed).")
-        End If
+        Catch ex As Exception
+            WriteRow(sw, "Office License via OSPP", "Error", ex.Message, source:="ospp.vbs")
+        End Try
     End Sub
 
     Private Sub WriteBatteryInfo(sw As StreamWriter)
@@ -773,39 +915,47 @@ Public Class WinSpecForm
 
             For Each obj As ManagementObject In searcher.Get()
                 found = True
-                sw.WriteLine("Battery Name," & obj("Name"))
-                sw.WriteLine("Battery Status," & obj("Status"))
-                sw.WriteLine("Battery Estimated Charge (%)," & obj("EstimatedChargeRemaining") & "%")
-                sw.WriteLine("Battery Estimated Runtime (min)," & obj("EstimatedRunTime"))
-                sw.WriteLine("Battery Status Code," & obj("BatteryStatus"))
-                sw.WriteLine("Battery Voltage (mV)," & obj("DesignVoltage"))
-                sw.WriteLine("Battery Chemistry," & GetBatteryChemistry(CStr(obj("Chemistry"))))
+                Dim name = If(obj("Name"), "Unknown").ToString()
+                Dim status = If(obj("Status"), "Unknown").ToString()
+                Dim charge = If(obj("EstimatedChargeRemaining"), "Unknown").ToString()
+                Dim runtime = If(obj("EstimatedRunTime"), "Unknown").ToString()
+                Dim statusCode = If(obj("BatteryStatus"), "Unknown").ToString()
+                Dim voltage = If(obj("DesignVoltage"), "Unknown").ToString()
+                Dim chemistry = GetBatteryChemistry(If(obj("Chemistry"), "").ToString())
+
+                WriteRow(sw, "Battery", "Name", name, "", "WMI:Win32_Battery")
+                WriteRow(sw, "Battery", "Status", status, "", "WMI:Win32_Battery")
+                WriteRow(sw, "Battery", "Estimated Charge", charge, "%", "WMI:Win32_Battery")
+                WriteRow(sw, "Battery", "Estimated Runtime", runtime, "min", "WMI:Win32_Battery")
+                WriteRow(sw, "Battery", "Status Code", statusCode, "", "WMI:Win32_Battery")
+                WriteRow(sw, "Battery", "Voltage", voltage, "mV", "WMI:Win32_Battery")
+                WriteRow(sw, "Battery", "Chemistry", chemistry, "", "WMI:Win32_Battery")
             Next
 
             If Not found Then
-                sw.WriteLine("Battery,Not Detected")
+                WriteRow(sw, "Battery", "Status", "Not Detected", "", "WMI:Win32_Battery")
             End If
         Catch ex As Exception
-            sw.WriteLine("Battery Info,Error: " & ex.Message)
+            WriteRow(sw, "Battery", "Error", ex.Message, "", "System")
         End Try
     End Sub
 
     Private Sub WriteVirtualizationInfo(sw As StreamWriter)
         Try
-            Dim manufacturer = ""
-            Dim model = ""
-            Dim biosVersion = ""
-            Dim baseboardProduct = ""
+            Dim manufacturer As String = ""
+            Dim model As String = ""
+            Dim biosVersion As String = ""
+            Dim baseboardProduct As String = ""
 
-            ' Win32_ComputerSystem
+            ' Gather Win32_ComputerSystem data
             Using csSearcher As New ManagementObjectSearcher("SELECT Manufacturer, Model FROM Win32_ComputerSystem")
                 For Each obj As ManagementObject In csSearcher.Get()
-                    manufacturer = obj("Manufacturer")?.ToString()
-                    model = obj("Model")?.ToString()
+                    manufacturer = If(obj("Manufacturer"), "").ToString()
+                    model = If(obj("Model"), "").ToString()
                 Next
             End Using
 
-            ' Win32_BIOS
+            ' Gather Win32_BIOS data
             Using biosSearcher As New ManagementObjectSearcher("SELECT Version FROM Win32_BIOS")
                 For Each obj As ManagementObject In biosSearcher.Get()
                     Dim versionObj = obj("Version")
@@ -819,20 +969,41 @@ Public Class WinSpecForm
                 Next
             End Using
 
-            ' Win32_BaseBoard
+            ' Gather Win32_BaseBoard data
             Using bbSearcher As New ManagementObjectSearcher("SELECT Product FROM Win32_BaseBoard")
                 For Each obj As ManagementObject In bbSearcher.Get()
-                    baseboardProduct = obj("Product")?.ToString()
+                    baseboardProduct = If(obj("Product"), "").ToString()
                 Next
             End Using
 
+            ' Determine platform type
             Dim vmType = DetectVMPlatform(manufacturer, model, biosVersion, baseboardProduct)
-            sw.WriteLine("Virtualization Platform," & If(String.IsNullOrEmpty(vmType), "Physical Machine", vmType))
+            Dim isVM = If(String.IsNullOrEmpty(vmType), "Physical Machine", vmType)
+
+            WriteRow(sw, "Virtualization", "Platform", isVM, "", "WMI:Win32_ComputerSystem + BIOS + BaseBoard")
+            WriteRow(sw, "Virtualization", "Detected From", $"{manufacturer} | {model} | {biosVersion} | {baseboardProduct}", "", "Derived")
 
         Catch ex As Exception
-            sw.WriteLine("Virtualization Platform,Error: " & ex.Message)
+            WriteRow(sw, "Virtualization", "Error", ex.Message, "", "WMI")
         End Try
     End Sub
+
+    Private Function DetectVMPlatform(manufacturer As String, model As String, biosVersion As String, baseboardProduct As String) As String
+        Dim idString = (manufacturer & " " & model & " " & biosVersion & " " & baseboardProduct).ToLowerInvariant()
+
+        If idString.Contains("vmware") Then Return "VMware"
+        If idString.Contains("virtualbox") Then Return "VirtualBox"
+        If idString.Contains("xen") Then Return "Xen"
+        If idString.Contains("kvm") Then Return "KVM"
+        If idString.Contains("qemu") Then Return "QEMU"
+        If idString.Contains("parallels") Then Return "Parallels"
+        If idString.Contains("bochs") Then Return "Bochs"
+        If idString.Contains("hyper-v") OrElse
+       (idString.Contains("microsoft corporation") AndAlso idString.Contains("virtual")) Then Return "Hyper-V"
+
+        Return Nothing
+    End Function
+
 
     Private Sub WriteSystemIdentifiersInfo(sw As StreamWriter)
         Try
@@ -843,7 +1014,7 @@ Public Class WinSpecForm
                     uuid = obj("UUID")?.ToString()
                 Next
             End Using
-            sw.WriteLine("Machine UUID," & uuid)
+            WriteRow(sw, "System Identity", "Machine UUID", uuid, "", "WMI:Win32_ComputerSystemProduct")
 
             ' --- System Serial Number ---
             Dim serialNumber As String = ""
@@ -852,7 +1023,7 @@ Public Class WinSpecForm
                     serialNumber = obj("SerialNumber")?.ToString()
                 Next
             End Using
-            sw.WriteLine("System Serial Number," & serialNumber)
+            WriteRow(sw, "System Identity", "System Serial Number", serialNumber, "", "WMI:Win32_BIOS")
 
             ' --- BIOS Mode (UEFI / Legacy) ---
             Dim biosMode As String = "Unknown"
@@ -860,7 +1031,7 @@ Public Class WinSpecForm
             If firmwareType.HasValue Then
                 biosMode = If(firmwareType.Value = 2, "UEFI", "Legacy")
             End If
-            sw.WriteLine("BIOS Mode," & biosMode)
+            WriteRow(sw, "System Identity", "BIOS Mode", biosMode, "", "Firmware")
 
             ' --- Chassis Type ---
             Dim chassisType As String = ""
@@ -873,10 +1044,10 @@ Public Class WinSpecForm
                     End If
                 Next
             End Using
-            sw.WriteLine("Chassis Type," & chassisType)
+            WriteRow(sw, "System Identity", "Chassis Type", chassisType, "", "WMI:Win32_SystemEnclosure")
 
         Catch ex As Exception
-            sw.WriteLine("System Identifier Info,Error: " & ex.Message)
+            WriteRow(sw, "System Identity", "System Identifier Info", $"Error: {ex.Message}", "", "System")
         End Try
     End Sub
 
@@ -923,23 +1094,6 @@ Public Class WinSpecForm
         End Select
     End Function
 
-
-    Private Function DetectVMPlatform(manufacturer As String, model As String, biosVersion As String, baseboardProduct As String) As String
-        Dim idString = (manufacturer & " " & model & " " & biosVersion & " " & baseboardProduct).ToLower()
-
-        If idString.Contains("vmware") Then Return "VMware"
-        If idString.Contains("virtualbox") Then Return "VirtualBox"
-        If idString.Contains("xen") Then Return "Xen"
-        If idString.Contains("kvm") Then Return "KVM"
-        If idString.Contains("hyper-v") Or idString.Contains("microsoft corporation") AndAlso idString.Contains("virtual") Then Return "Hyper-V"
-        If idString.Contains("qemu") Then Return "QEMU"
-        If idString.Contains("parallels") Then Return "Parallels"
-        If idString.Contains("bochs") Then Return "Bochs"
-
-        Return Nothing ' Assume physical machine
-    End Function
-
-
     Private Function GetBatteryChemistry(code As String) As String
         Select Case code
             Case "1" : Return "Other"
@@ -976,12 +1130,12 @@ Public Class WinSpecForm
         Select Case statusCode
             Case 0 : Return "Unlicensed"
             Case 1 : Return "Licensed"
-            Case 2 : Return "Out-of-Box Grace Period"
-            Case 3 : Return "Out-of-Tolerance Grace Period"
-            Case 4 : Return "Non-Genuine Grace Period"
-            Case 5 : Return "Notification Mode"
-            Case 6 : Return "Extended Grace Period"
-            Case Else : Return "Unknown Status"
+            Case 2 : Return "OOB Grace"
+            Case 3 : Return "OOT Grace"
+            Case 4 : Return "Non-Genuine Grace"
+            Case 5 : Return "Notification"
+            Case 6 : Return "Extended Grace"
+            Case Else : Return "Unknown (" & statusCode & ")"
         End Select
     End Function
 
