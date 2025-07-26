@@ -53,9 +53,17 @@ C:\System Information
 Each `.csv` is structured as:
 
 ``` plaintext
-Property,Value
-CPU Model,Intel Core i7-9700
-Total RAM,16 GB
+Category,Key,Value,Unit,CollectedAt,Source
+CPU,Processor 1 Name,Intel(R) Core(TM) i5-10400F CPU @ 2.90GHz,,2025-07-26 13:33:59,WMI:Win32_Processor
+CPU,Processor 1 Max Clock Speed,2904,MHz,2025-07-26 13:33:59,WMI:Win32_Processor
+RAM,Slot 1 Bank Label,BANK 0,,2025-07-26 13:33:59,WMI:Win32_PhysicalMemory
+RAM,Slot 1 Capacity,8.00,GB,2025-07-26 13:33:59,WMI:Win32_PhysicalMemory
+RAM,Slot 1 Speed,2400,MHz,2025-07-26 13:33:59,WMI:Win32_PhysicalMemory
+RAM,Slot 1 Type,DDR4,,2025-07-26 13:33:59,WMI:Win32_PhysicalMemory
+RAM,Slot 2 Bank Label,BANK 1,,2025-07-26 13:33:59,WMI:Win32_PhysicalMemory
+RAM,Slot 2 Capacity,8.00,GB,2025-07-26 13:33:59,WMI:Win32_PhysicalMemory
+RAM,Slot 2 Speed,2400,MHz,2025-07-26 13:33:59,WMI:Win32_PhysicalMemory
+RAM,Slot 2 Type,DDR4,,2025-07-26 13:33:59,WMI:Win32_PhysicalMemory
 ...
 ```
 
